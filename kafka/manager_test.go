@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
@@ -30,6 +31,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kfake"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -805,6 +807,50 @@ func TestListTopics(t *testing.T) {
 	topics, err := m.ListTopics(context.Background(), "name_space")
 	assert.EqualError(t, err, "name_space-topic2 UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.")
 	assert.Equal(t, []string{"name_space-mytopic", "name_space-topic1", "name_space-topic3"}, topics)
+}
+
+func TestListEndOffsets(t *testing.T) {
+	_, commonConfig := newFakeCluster(t)
+	m, err := NewManager(ManagerConfig{CommonConfig: commonConfig})
+	require.NoError(t, err)
+	t.Cleanup(func() { m.Close() })
+
+	client, err := kgo.NewClient(kgo.SeedBrokers(commonConfig.Brokers...))
+	require.NoError(t, err)
+	t.Cleanup(client.Close)
+
+	admin := kadm.NewClient(client)
+	_, err = admin.CreateTopics(t.Context(), 2, 1, nil, "logs", "metrics")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for range 3 {
+		require.NoError(t, client.ProduceSync(ctx, &kgo.Record{
+			Topic: "logs",
+			Value: []byte("x"),
+		}).FirstErr())
+	}
+
+	offsets, err := m.ListEndOffsets(ctx, "logs", "metrics")
+	require.NoError(t, err)
+	require.NoError(t, offsets.Error())
+
+	var logsEnd int64
+	var logsPartitions int
+	offsets.Each(func(o kadm.ListedOffset) {
+		if o.Topic != "logs" {
+			return
+		}
+		logsPartitions++
+		logsEnd += o.Offset
+	})
+	require.Equal(t, 2, logsPartitions)
+	require.Equal(t, int64(3), logsEnd)
+
+	metrics0, ok := offsets.Lookup("metrics", 0)
+	require.True(t, ok)
+	require.Equal(t, int64(0), metrics0.Offset)
 }
 
 func TestUnknownTopicOrPartition(t *testing.T) {

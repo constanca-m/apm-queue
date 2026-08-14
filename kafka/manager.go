@@ -389,3 +389,11 @@ func (m *Manager) ListTopics(ctx context.Context, prefix string) ([]string, erro
 	slices.Sort(topics)
 	return topics, errors.Join(errs...)
 }
+
+// ListEndOffsets returns the high watermark for each partition of the given
+// topics. Topic names are broker names, the same as ListTopics returns.
+// Namespace is not prepended. If no topics are specified, all topics are
+// listed.
+func (m *Manager) ListEndOffsets(ctx context.Context, topics ...string) (kadm.ListedOffsets, error) {
+	return m.adminClient.ListEndOffsets(ctx, topics...)
+}
